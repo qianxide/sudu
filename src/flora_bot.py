@@ -1774,10 +1774,8 @@ class FloraBot:
         raise RuntimeError("找不到 Generate 按钮")
 
     def _download_video(self, page: Page, task: Task) -> None:
-        """生成完成后直接抓 <video> 直链下载并保存到 ./output/。"""
-        output_dir = Path("output")
-        output_dir.mkdir(exist_ok=True)
-        target = output_dir / f"{task.name}-{int(time.time())}.mp4"
+        """生成完成后直接抓 <video> 直链下载并保存到 ./output/<EP>/<segment>.mp4。"""
+        target = self._task_output_path(task)
 
         log.info("直接抓视频直链下载到 %s", target)
 
@@ -1843,6 +1841,16 @@ class FloraBot:
             log.warning("UI 下载备用也失败: %s", e)
 
         log.error("视频下载失败,请手动下载; 素材已保留供下次重试")
+
+    def _task_output_path(self, task: Task) -> Path:
+        """按素材 EP 目录归档输出; 同名文件存在时保留旧文件。"""
+        ep_name = task.folder.parent.name if task.folder and task.folder.parent else "unknown-ep"
+        output_dir = Path("output") / ep_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+        target = output_dir / f"{task.name}.mp4"
+        if not target.exists():
+            return target
+        return output_dir / f"{task.name}-{int(time.time())}.mp4"
 
     def _dismiss_onboarding(self, page: Page) -> None:
         """新项目画布会有 "What are you working on?" 覆盖层,挡住左侧 + 按钮的命中区域。
