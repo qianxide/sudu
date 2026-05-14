@@ -497,7 +497,7 @@ class FloraBot:
         """在 timeout_s 秒内等 URL 进入 /projects/,期间反复处理:
            1. Microsoft 二次登录页(点'已登录'账户卡片)
            2. Cloudflare Turnstile 复选框
-           3. 卡在 sso-callback 黑屏超过 12 秒就自动刷新
+           3. 卡在 sso-callback/空白页超过 12 秒就自动多次刷新
            4. 其它通用"跳过/同意"按钮
            5. **/sign-in?redirect_url=... 卡 >20s 时停止自动 retry,等用户手动接手**
         """
@@ -517,6 +517,42 @@ class FloraBot:
 
             url = page.url
             log.info("[等项目页] 第%d轮  URL: %s", loop, url[:120])
+
+            # Microsoft/Clerk 回跳时偶尔会落到 chrome-error/about:blank 或纯空白 DOM。
+            # 这种页面通常刷新几次就能继续跳转,比马上换号成功率高。
+            blankish = url.startswith("chrome-error://") or url in ("about:blank", "about:srcdoc")
+            if not blankish:
+                try:
+                    blankish = page.evaluate(
+                        """() => {
+                            const text = (document.body?.innerText || '').trim();
+                            const html = (document.body?.innerHTML || '').trim();
+                            return document.readyState === 'complete' && text.length === 0 && html.length < 80;
+                        }"""
+                    )
+                except Exception:
+                    blankish = False
+            if blankish and reloaded_count < 8:
+                reloaded_count += 1
+                stuck_since = None
+                stuck_url = ""
+                log.warning("检测到空白/错误页,刷新恢复(第 %d 次): %s", reloaded_count, url[:120])
+                self._dump_screenshot(page, f"blank-before-reload-{reloaded_count}")
+                try:
+                    page.reload(wait_until="domcontentloaded", timeout=20_000)
+                except Exception as e:
+                    log.warning("空白页刷新失败: %s", e)
+                self._human_wait(1500, 2500)
+                # 多次刷新还停在错误页时,主动回 /projects 触发 Clerk/Flora 重新判定 session。
+                if reloaded_count in (4, 8):
+                    try:
+                        log.warning("空白页多次未恢复,主动跳 /projects 重试 session")
+                        page.goto("https://app.flora.ai/projects",
+                                  wait_until="domcontentloaded", timeout=20_000)
+                        self._human_wait(2000, 3000)
+                    except Exception as e:
+                        log.warning("跳 /projects 失败: %s", e)
+                continue
 
             # 0a) Clerk SDK bug:clerk.flora.ai/sso-callback 经常 404(它本该
             #     重定向到 app.flora.ai/sso-callback?redirect_url=... 但相对路径写挂)
@@ -655,19 +691,27 @@ class FloraBot:
                 page.wait_for_timeout(3000)
                 continue
 
-            # 3) 卡在同一 URL(尤其是 sso-callback)超过 12 秒 → 刷新
+            # 3) 卡在同一 URL(尤其是 sso-callback)超过 12 秒 → 多刷新几次
             now = time.time()
             if url == stuck_url:
-                if stuck_since and now - stuck_since > 12 and reloaded_count < 3:
+                if stuck_since and now - stuck_since > 12 and reloaded_count < 8:
                     reloaded_count += 1
                     log.warning("URL 卡住 >12s,刷新页面(第 %d 次)", reloaded_count)
                     self._dump_screenshot(page, f"stuck-before-reload-{reloaded_count}")
                     try:
                         page.reload(wait_until="domcontentloaded", timeout=20_000)
-                    except PWTimeout:
-                        pass
+                    except Exception as e:
+                        log.warning("卡住刷新失败: %s", e)
                     stuck_since = time.time()
                     self._human_wait(1500, 2500)
+                    if reloaded_count in (4, 8):
+                        try:
+                            log.warning("同一 URL 多次刷新仍未恢复,主动跳 /projects")
+                            page.goto("https://app.flora.ai/projects",
+                                      wait_until="domcontentloaded", timeout=20_000)
+                            self._human_wait(2000, 3000)
+                        except Exception as e:
+                            log.warning("跳 /projects 失败: %s", e)
                     continue
             else:
                 stuck_url = url
