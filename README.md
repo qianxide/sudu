@@ -1,6 +1,5 @@
 # seed
 
-用批量 Outlook OAuth 账号在 [Flora](https://app.flora.ai) 上跑 Seedance 2.0,自动生成视频并下载到本地。
 
 支持两种运行模式:
 - **UI 模式**(默认):Patchright 启动本地 Chrome,以人化操作走完登录 → 上传参考图 → 连线 → 生成 → 下载
